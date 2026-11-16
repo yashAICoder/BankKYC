@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>One request, one owner: fixing the KYC back and forth</title>
+<style>
+:root{
+  --paper:#F4F1EA; --card:#FFFFFF; --ink:#16202A; --muted:#5A6672; --line:#DCD6C8; --soft:#ECE8DD;
+  --good:#1F6B57; --goodbg:#E2F0EA; --bad:#A63A28; --badbg:#F8E4DE; --amber:#B9791F; --amberbg:#F8ECD6;
+  --spec:#2B4C7E; --queue:#9099A4; --client:#D08A2E; --hand:#B8432F;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--sans)}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 22px 60px}
+:focus-visible{outline:3px solid #1B5FD1;outline-offset:2px;border-radius:6px}
+button{font:inherit;color:inherit;cursor:pointer}
+.skip{position:absolute;left:-999px}.skip:focus{left:12px;top:12px;background:#fff;padding:8px 12px;z-index:9}
+
+/* header memo */
+.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:700}
+h1{font:600 clamp(26px,4vw,40px)/1.12 var(--serif);margin:6px 0 10px;letter-spacing:-.01em;max-width:820px}
+.lede{max-width:760px;color:#2E3A45;margin:0 0 20px;font-size:16px}
+.memo{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:14px;background:var(--card);overflow:hidden;margin-bottom:22px}
+.memo div{padding:14px 16px;border-right:1px solid var(--line)}.memo div:last-child{border-right:0}
+.memo b{display:block;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+.memo span{font-size:14px}
+
+/* controls */
+.controls{display:flex;flex-wrap:wrap;gap:14px 24px;align-items:center;justify-content:space-between;margin-bottom:16px}
+.switch{display:inline-flex;background:var(--soft);border-radius:999px;padding:4px;border:1px solid var(--line)}
+.switch button{border:0;background:none;padding:9px 22px;border-radius:999px;font-weight:650;color:var(--muted);min-width:132px}
+.switch button[aria-pressed=true]{background:var(--ink);color:#fff}
+.steps{display:flex;flex-wrap:wrap;gap:6px;list-style:none;margin:0;padding:0}
+.steps button{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:8px 12px;display:flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px}
+.steps button[aria-current=step]{border-color:var(--ink);box-shadow:0 0 0 2px var(--ink) inset}
+.steps .n{width:20px;height:20px;border-radius:50%;background:var(--soft);display:grid;place-items:center;font-size:11.5px}
+.steps .tag{font-size:10.5px;font-weight:800;letter-spacing:.06em;padding:1px 6px;border-radius:4px;text-transform:uppercase}
+.tag.fix{background:var(--good);color:#fff}.tag.prob{background:var(--bad);color:#fff}
+
+/* signature: delay ribbon */
+.ribbon{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px 16px;margin-bottom:18px}
+.rhead{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:6px 16px;margin-bottom:10px}
+.rhead h2{font:600 18px/1.2 var(--serif);margin:0}
+.day{font:600 30px/1 var(--serif)}.day small{font:500 13px var(--sans);color:var(--muted);margin-left:6px}
+.track{position:relative;height:38px;border-radius:8px;background:repeating-linear-gradient(90deg,var(--soft) 0 1px,transparent 1px calc(100%/13));border:1px solid var(--line);overflow:hidden}
+.fill{position:absolute;left:0;top:0;bottom:0;display:flex}
+.seg{height:100%;transition:width .5s ease;border-right:2px solid var(--card)}
+.seg.spec{background:var(--spec)}.seg.queue{background:var(--queue)}.seg.client{background:var(--client)}.seg.hand{background:var(--hand)}
+.ghost{position:absolute;top:0;bottom:0;border-left:2px dashed var(--good);background:repeating-linear-gradient(135deg,rgba(31,107,87,.10) 0 6px,transparent 6px 12px);display:grid;place-items:center;font-size:12.5px;color:var(--good);font-weight:650}
+.ticks{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin:4px 2px 10px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12.5px;color:#2E3A45}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+
+/* main grid */
+.grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,1fr);gap:18px;align-items:start}
+.frame{border-radius:14px;border:1px solid #BDB6A4;background:var(--card);overflow:hidden;box-shadow:0 10px 30px rgba(22,32,42,.08)}
+.bar{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 16px;background:var(--soft);border-bottom:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+.bar b{color:var(--ink)}
+.role{background:var(--ink);color:#fff;border-radius:999px;padding:2px 10px;font-size:11.5px;font-weight:700}
+.screen{padding:22px;min-height:470px;position:relative}
+.screen h2{font:600 21px/1.2 var(--serif);margin:0 0 4px;outline:none}
+.screen .sub{color:var(--muted);margin:0 0 16px}
+.frame.before{border-radius:3px;font-family:Tahoma,Verdana,Arial,sans-serif}
+.frame.before .bar{background:linear-gradient(#f3f3ee,#d9d9d1);border-color:#b3b3aa}
+.frame.before .screen{background:#fbfbf8}
+.frame.before .screen h2{font-family:Tahoma,Verdana,Arial,sans-serif;font-size:18px}
+.frame.before .btn{border-radius:2px;background:#e6e6df;border-color:#8c8c82;color:#111}
+.frame.before .btn.pri{background:#d8dde6;border-color:#5b6b85;color:#111}
+.frame.before .role{background:#6b6b62;border-radius:2px}
+
+.btn{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:9px 16px;font-weight:650}
+.btn.pri{background:var(--ink);border-color:var(--ink);color:#fff}
+.btn.good{background:var(--good);border-color:var(--good);color:#fff}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;flex-wrap:wrap;align-items:center}
+.actions .hint{margin-right:auto;color:var(--muted);font-size:13px}
+.chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;background:var(--soft);color:#3A4650}
+.chip.ok{background:var(--goodbg);color:var(--good)}.chip.bad{background:var(--badbg);color:var(--bad)}.chip.warn{background:var(--amberbg);color:#8A5A12}
+.list{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.li:last-child{border-bottom:0}.li small{display:block;color:var(--muted)}
+.prog{height:8px;background:var(--soft);border-radius:99px;overflow:hidden;margin:8px 0 14px}.prog i{display:block;height:100%;background:var(--good)}
+.note{border-left:4px solid var(--amber);background:var(--amberbg);padding:10px 12px;border-radius:0 8px 8px 0;font-size:13.5px;margin-top:12px}
+.note.good{border-color:var(--good);background:var(--goodbg)}.note.bad{border-color:var(--bad);background:var(--badbg)}
+.two{display:grid;grid-template-columns:1.2fr 1fr;gap:14px}
+.val{border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:9px;background:#fff}
+.val.sel{border-color:var(--ink);box-shadow:0 0 0 2px var(--ink) inset}.val.conflict{border-color:#D79A8D;background:#FFF9F7}
+.val .k{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700}
+.val .row{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:4px;flex-wrap:wrap}
+.link{background:none;border:0;padding:0;color:#1B5FD1;text-decoration:underline;font-size:13px;font-weight:600}
+.page{background:#fff;border:1px solid var(--line);border-radius:6px;padding:20px;font-family:Georgia,serif;font-size:13px;box-shadow:0 2px 10px rgba(22,32,42,.1)}
+.page mark{background:#FDE68A;outline:2px solid #E5A100;padding:0 2px}
+.bars i{display:block;height:7px;background:#E6E2D7;border-radius:3px;margin:0 0 8px}.bars i:nth-child(3n){width:80%}.bars i:nth-child(4n){width:60%}
+label.chk{display:flex;gap:10px;align-items:flex-start}
+input[type=checkbox]{width:18px;height:18px;margin-top:2px;accent-color:var(--good)}
+select,textarea,input[type=text]{font:inherit;border:1px solid #B9B3A3;border-radius:8px;padding:8px 10px;background:#fff;color:var(--ink);max-width:100%}
+textarea{width:100%;min-height:96px}
+.preview{background:#FAF8F2;border:1px dashed #A9A28F;border-radius:12px;padding:14px;margin-top:12px}
+.preview ol{margin:6px 0 0;padding-left:20px}
+.pin{position:absolute;right:16px;top:12px;background:var(--good);color:#fff;font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:4px 10px;border-radius:6px}
+.pin.bad{background:var(--bad)}
+.thread .m{border:1px solid #cfcfc6;background:#fff;padding:9px 12px;margin-bottom:8px}.thread .m small{color:var(--muted);display:block}
+.thread .m.me{background:#eef1f6}
+
+/* side column */
+.side{display:flex;flex-direction:column;gap:14px;position:sticky;top:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.card h3{font:600 17px/1.25 var(--serif);margin:0 0 8px}
+.lab{font-size:11px;letter-spacing:.12em;text-transform:uppercase;font-weight:800;color:var(--muted)}
+.fixcard{border:2px solid var(--good)}.fixcard .lab{color:var(--good)}
+.probcard{border:2px solid var(--bad)}.probcard .lab{color:var(--bad)}
+.dl{margin:10px 0 0;display:grid;gap:9px}.dl div b{display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.metric{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}
+.metric div{background:var(--soft);border-radius:10px;padding:10px 12px}.metric .big{font:600 28px/1 var(--serif)}.metric small{color:var(--muted)}
+.foot{margin-top:26px;color:var(--muted);font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.foot b{color:var(--ink)}
+
+@media(max-width:940px){.grid{grid-template-columns:1fr}.side{position:static}.memo{grid-template-columns:1fr 1fr}.memo div:nth-child(2){border-right:0}.memo div:nth-child(-n+2){border-bottom:1px solid var(--line)}.two{grid-template-columns:1fr}.foot{grid-template-columns:1fr}}
+@media(max-width:560px){.memo{grid-template-columns:1fr}.memo div{border-right:0;border-bottom:1px solid var(--line)}.switch button{min-width:0;padding:9px 14px}.screen{padding:16px}.steps button .t{display:none}.steps button{padding:8px 10px}}
+@media(max-width:560px){.val select{width:100%}.val .row>label{width:100%}.val .row>label.chk{width:auto}.actions .btn{flex:1 1 auto}}
+@media(prefers-reduced-motion:reduce){.seg{transition:none}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<a class="skip" href="#frame">Skip to the prototype</a>
+<div class="wrap">
+  <div class="eyebrow">Product teardown and prototype · Commercial onboarding</div>
+  <h1>One request, one owner: fixing the KYC back and forth</h1>
+  <p class="lede">A business client has opened an account application to close a deal on 30 November. The documents are in. The account is still not open. Switch between the current process and the improved one, click through five steps, and watch where the days go.</p>
+  <div class="memo" role="list">
+    <div role="listitem"><b>Who it is for</b><span>The onboarding specialist, and the business client waiting on them.</span></div>
+    <div role="listitem"><b>The problem</b><span>The first request says “incomplete”. Nobody knows what to fix or who acts next.</span></div>
+    <div role="listitem"><b>The decision</b><span>Replace free text with one structured request: items, reasons, one owner, one date.</span></div>
+    <div role="listitem"><b>The metric</b><span>Repeat-request rate. How often a client is asked twice for the same gap.</span></div>
+  </div>
+
+  <div class="controls">
+    <div class="switch" role="group" aria-label="Choose which process to view">
+      <button type="button" data-mode="before" aria-pressed="false">Before</button>
+      <button type="button" data-mode="after" aria-pressed="true">Improved</button>
+    </div>
+    <ol class="steps" id="steps" aria-label="Steps in the account opening"></ol>
+  </div>
+
+  <section class="ribbon" aria-label="Where the days went">
+    <div class="rhead"><h2>The delay ribbon: where this case spent its days</h2><div class="day" id="day"></div></div>
+    <div class="track" id="track"></div>
+    <div class="ticks"><span>Day 0</span><span>Day 5</span><span>Day 10</span><span>Day 13</span></div>
+    <div class="legend">
+      <span><i style="background:var(--spec)"></i>Specialist working</span>
+      <span><i style="background:var(--queue)"></i>Waiting in a queue</span>
+      <span><i style="background:var(--client)"></i>Waiting on the client</span>
+      <span><i style="background:var(--hand)"></i>Lost between teams</span>
+    </div>
+  </section>
+
+  <main class="grid" id="frame">
+    <div class="frame after" id="frameBox">
+      <div class="bar"><span id="barTitle"></span><span class="role" id="role"></span></div>
+      <div class="screen" id="screen" aria-live="polite"></div>
+    </div>
+    <aside class="side" aria-label="Product reasoning">
+      <div class="card" id="anno"></div>
+      <div class="card" id="metric"></div>
+    </aside>
+  </main>
+
+  <div class="foot">
+    <div><b>Left out on purpose.</b> Automatic KYC clearance, silent updates to the client record, and complex ownership structures. Each one changes the risk, not just the speed.</div>
+    <div><b>About the numbers.</b> This is one illustrative case with sample data and fictional names. The day counts show the shape of the problem. They are not measured results.</div>
+  </div>
+</div>
+
+<script>
+(function(){
+var DAYS=13;
+var STEP_NAMES=['Submit','Review','Request','Reply','Clear'];
+var ROLES=['Client','Specialist','Specialist','Client','Specialist'];
+var BAR=['Business account application','Case COB-2417 · Review','Case COB-2417 · Request to client','Application COB-2417 · Request from the bank','Case COB-2417 · Clearance'];
+var SEGS={
+ before:[[],[['queue',2],['spec',2]],[['client',2],['hand',2]],[['client',3]],[['spec',1],['hand',1]]],
+ after:[[],[['queue',.5],['spec',.5]],[['spec',.5]],[['client',1]],[['spec',.5]]]
+};
+var ENDDAY={before:[0,4,8,11,13],after:[0,1,1.5,2.5,3]};
+var REQS={before:[0,0,1,2,2],after:[0,0,1,1,1]};
+var NAMES={spec:'Specialist working',queue:'Waiting in a queue',client:'Waiting on the client',hand:'Lost between teams'};
+
+var S={mode:'after',step:0,page:17,accepted:{},sel:{ein:true,sign:true},codes:{ein:'R-01',sign:'R-04'},due:'Wed 18 Nov',att:{ein:false,sign:false},view:'v1',draft:'Your application is incomplete. Please resubmit the required documents.',audit:false};
+
+var ANNO={
+ before:[
+  {t:'Today the client is guessing',b:'The portal shows a generic list and one upload box. It cannot say what this entity type needs, so the first submission is often incomplete.'},
+  {t:'Today the specialist works across files',b:'One 38 page PDF, a sheet of typed values, and a status that reads “In review” with no owner. Nothing links a value to its page.'},
+  {t:'This is where the days go',problem:true,rows:[['What the client receives','“Incomplete.” No item, no reason, no page, no date.'],['Who acts next','Nobody is named.'],['What happens','The client replies with questions or the same files.']]},
+  {t:'The client cannot tell what to fix',b:'The client asks the relationship manager. The manager emails operations. Operations says it is pending. A second, specific request goes out four days later.'},
+  {t:'Cleared on day 13, with no trail',b:'Ask who owned each step and the answer sits in someone’s inbox. Compliance rebuilds it from email.'}],
+ after:[
+  {t:'Show the checklist before the upload',b:'Decision: tell the client what a domestic LLC needs before they upload. Why: a first request that guesses fails. Trade-off: the client can still submit with an item missing, because a deal date matters more than a blocked button. We flag the gap instead.'},
+  {t:'Put each value beside its page',b:'Decision: show every value next to the page it came from. Why: comparing across files by hand is slow. A person accepts every value, and a value that conflicts with its source cannot be accepted. Trade-off: suggestions can be wrong, so nothing is filled in silently.'},
+  {t:'One request replaces the email',fix:true,rows:[['Decision','Build one request from reason codes. One owner. One due date.'],['Why','The first request is where the days are lost. “Incomplete” gives the client nothing to act on.'],['Trade-off','Specialists lose free text as the only option. They can still add a note.'],['Watch','Repeat-request rate. It should fall.']]},
+  {t:'The client sees the same request',b:'The client sees exactly the preview the specialist approved. Each item says what is needed and why. Replying happens here, not in email.'},
+  {t:'Clearance stays locked until the evidence is in',b:'Clear KYC unlocks only when every value is accepted and every required document has arrived. The decision log keeps who accepted what, from which page. A person clears the case.'}]
+};
+
+var $=function(s){return document.querySelector(s)};
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+var CODES={'R-01':'Required document missing','R-02':'Document unreadable or incomplete','R-03':'Information differs between documents','R-04':'Signer not authorised in resolution','R-06':'Policy question, ask Compliance'};
+
+/* ---------- screens ---------- */
+function bars(n){var o='<div class="bars">';for(var i=0;i<n;i++)o+='<i></i>';return o+'</div>'}
+function scrBefore(){
+ var st=S.step;
+ if(st===0) return '<h2 tabindex="-1">Upload documents</h2><p class="sub">Harbor Ridge Holdings LLC · needed by Mon 30 Nov</p><div class="two"><div><div style="border:2px dashed #999;padding:26px;text-align:center;background:#fff">Drop one or more files here<br><span class="chip">HarborRidge_all_documents.pdf · 38 pages</span></div><p class="sub" style="margin-top:10px">The portal does not tell you whether anything is still missing.</p></div><div><b>Documents commonly required for business accounts</b><ul><li>Formation documents</li><li>Ownership information</li><li>Identification for signers</li><li>Tax documents</li></ul></div></div><div class="actions"><button class="btn pri" data-go="1" data-fid="b1">Submit</button></div>';
+ if(st===1) return '<h2 tabindex="-1">Case COB-2417</h2><p class="sub">Status: <b>In review</b>. Owner: not shown. Due date: not shown.</p><div class="two"><div><div class="page" aria-label="Scanned page">'+bars(15)+'<div style="text-align:center;color:#777;margin-top:8px">Scanned page '+S.page+' of 38</div></div><div class="actions" style="justify-content:space-between;margin-top:10px"><button class="btn" data-pg="-1" data-fid="pp">Previous</button><button class="btn" data-pg="1" data-fid="pn">Next page</button></div></div><div><b>Values typed in by hand</b><p class="sub">Nothing links a value to its page.</p><label>Legal name<br><input type="text" placeholder="type here" style="width:100%"></label><br><br><label>Owners over 25%<br><input type="text" placeholder="type here" style="width:100%"></label><br><br><label>Authorised signers<br><input type="text" placeholder="type here" style="width:100%"></label></div></div><div class="actions"><span class="hint">Something looks off with the signers, but the page is hard to find.</span><button class="btn pri" data-go="2" data-fid="b2">Write to the client</button></div>';
+ if(st===2) return '<span class="pin bad">The problem</span><h2 tabindex="-1">New email to the client</h2><p class="sub">Free text. No template, no reason code, no owner, no date.</p><div class="list"><div class="li"><span><small>To</small>L. Chen, Harbor Ridge Holdings</span></div><div class="li"><span><small>Subject</small>Your application</span></div></div><br><label for="draft">Message</label><textarea id="draft" data-draft>'+esc(S.draft)+'</textarea><div class="actions"><span class="hint">Sent on day 4.</span><button class="btn pri" data-go="3" data-fid="b3">Send email</button></div>';
+ if(st===3) return '<h2 tabindex="-1">Email thread</h2><p class="sub">Days 4 to 11. Three people, no single owner.</p><div class="thread"><div class="m"><small>Day 4 · Operations to client</small>Your application is incomplete. Please resubmit the required documents.</div><div class="m me"><small>Day 6 · Client to operations</small>We sent everything. Which documents are missing? Our deal closes on the 30th.</div><div class="m"><small>Day 6 · Relationship manager to operations</small>Any update? The client is asking.</div><div class="m"><small>Day 6 · Operations to relationship manager</small>Still pending. Checking with compliance.</div><div class="m"><small>Day 8 · Operations to client</small>The resolution does not name Elena Ruiz. Please send an updated resolution and your EIN confirmation letter.</div></div><div class="actions"><button class="btn pri" data-go="4" data-fid="b4">Client sends the right files</button></div>';
+ return '<h2 tabindex="-1">Cleared on day 13</h2><p class="sub">Account setup can begin. Two requests were needed for one gap.</p><div class="note bad"><b>Who owned each step?</b> Not recorded. To answer an audit question, Compliance exports the emails and rebuilds the story by hand.</div>'+(S.audit?'<div class="list" style="margin-top:12px"><div class="li"><span>Decision log<small>None. 9 emails on this case.</small></span></div></div>':'')+'<div class="actions"><button class="btn" data-audit="1" data-fid="au">Show the audit trail</button></div>';
+}
+var VALS=[
+ {id:'v1',k:'Legal name',app:'Harbor Ridge Holdings LLC',doc:'Harbor Ridge Holdings, LLC',src:'Certificate of Formation, page 1',note:'Punctuation differs only.'},
+ {id:'v2',k:'Owner over 25%',app:'Marcus Webb, 60%',doc:'Marcus Webb, 60%',src:'Operating Agreement, page 9'},
+ {id:'v3',k:'Owner over 25%',app:'Priya Nair, 40%',doc:'Priya Nair, 40%',src:'Operating Agreement, page 9'},
+ {id:'v4',k:'Authorised signer',app:'Marcus Webb',doc:'Marcus Webb, Managing Member',src:'Resolution, page 2'},
+ {id:'v5',k:'Authorised signer',app:'Elena Ruiz',doc:null,src:'Resolution, page 2',bad:'Not named in the resolution. Cannot be accepted.'},
+ {id:'v6',k:'Tax ID (EIN)',app:'84-1234567',doc:null,src:'EIN confirmation letter',bad:'Document not received.'}];
+var SNIP={
+ v1:'<p>1. The name of the limited liability company is <mark>Harbor Ridge Holdings, LLC</mark>.</p>'+bars(7),
+ v2:'<p><b>Schedule A. Members and interests</b></p><p><mark>Marcus Webb, Managing Member, 60%</mark><br>Priya Nair, Member, 40%</p>'+bars(5),
+ v3:'<p><b>Schedule A. Members and interests</b></p><p>Marcus Webb, Managing Member, 60%<br><mark>Priya Nair, Member, 40%</mark></p>'+bars(5),
+ v4:'<p>RESOLVED, that <mark>Marcus Webb, Managing Member</mark>, is authorised to open and operate accounts.</p>'+bars(6),
+ v5:'<p>RESOLVED, that Marcus Webb, Managing Member, is authorised to open and operate accounts.</p><p><mark>No other person is named.</mark></p>'+bars(5),
+ v6:'<p style="text-align:center;margin-top:40px"><mark>No EIN letter has been received.</mark></p>'};
+function accCount(){var n=0;VALS.forEach(function(v){if(S.accepted[v.id])n++});return n}
+function scrAfter(){
+ var st=S.step;
+ if(st===0) return '<h2 tabindex="-1">Documents for Harbor Ridge Holdings LLC</h2><p class="sub">Domestic LLC · six items · needed by Mon 30 Nov</p><div class="prog" aria-label="5 of 6 provided"><i style="width:83%"></i></div><div class="list">'+['Certificate of Formation','Operating Agreement','Resolution naming authorised signers','Government ID for each signer','Ownership certification (25%+ owners)'].map(function(x){return '<div class="li"><span>'+x+'</span><span class="chip ok">Provided</span></div>'}).join('')+'<div class="li"><span>EIN confirmation letter<small>Required. We will ask for it in one request.</small></span><span class="chip bad">Missing</span></div></div><div class="note">You can submit now and review will start. We cannot finish until the missing item arrives.</div><div class="actions"><button class="btn pri" data-go="1" data-fid="a1">Submit with 1 item missing</button></div>';
+ if(st===1){
+  var n=accCount();
+  return '<h2 tabindex="-1">Verify the values</h2><p class="sub">Next action: A. Mehta, specialist. Needed by Mon 30 Nov.</p><div class="two"><div>'+VALS.map(function(v){
+    var acc=S.accepted[v.id], lock=!!v.bad;
+    return '<div class="val '+(S.view===v.id?'sel':'')+(lock&&!acc?' conflict':'')+'"><span class="k">'+v.k+'</span><div class="row"><span><b>'+esc(v.app)+'</b>'+(v.doc?'<br><small>Document: '+esc(v.doc)+'</small>':'<br><small style="color:var(--bad)">'+v.bad+'</small>')+'</span><span>'+(acc?'<span class="chip ok">Accepted</span>':'<button class="btn" '+(lock?'disabled aria-disabled="true"':'data-acc="'+v.id+'"')+' data-fid="acc'+v.id+'">Accept</button>')+'</span></div><div class="row"><button class="link" data-view="'+v.id+'" data-fid="vw'+v.id+'">View source: '+v.src+'</button></div></div>'}).join('')+'</div><div><div class="lab" style="margin-bottom:6px">Source page</div><div class="page">'+SNIP[S.view]+'</div><p class="sub" style="margin-top:8px">Highlighted text is where the value came from.</p></div></div><div class="actions"><span class="hint">Accepted '+n+' of 6. A person accepts every value.</span><button class="btn pri" data-go="2" data-fid="a2">Create one request</button></div>';
+ }
+ if(st===2){
+  var items=[];if(S.sel.ein)items.push({k:'ein',t:'We have not received your EIN confirmation letter. It is required for a domestic LLC. Please upload it.'});
+  if(S.sel.sign)items.push({k:'sign',t:'The resolution (page 2) names Marcus Webb only. Please upload a signed resolution that names Elena Ruiz, or tell us if she should be removed from the application.'});
+  function row(k,label){return '<div class="val"><div class="row" style="margin-top:0"><label class="chk"><input type="checkbox" data-sel="'+k+'" '+(S.sel[k]?'checked':'')+' data-fid="sel'+k+'"><b>'+label+'</b></label><label><span class="lab">Reason</span> <select data-code="'+k+'" data-fid="cd'+k+'">'+Object.keys(CODES).map(function(c){return '<option value="'+c+'" '+(S.codes[k]===c?'selected':'')+'>'+c+' · '+CODES[c]+'</option>'}).join('')+'</select></label></div></div>'}
+  return '<span class="pin">The fix</span><h2 tabindex="-1">Create one request</h2><p class="sub">Everything the client must fix goes in a single request with one owner.</p>'+row('ein','EIN confirmation letter')+row('sign','Authority for Elena Ruiz')+'<div class="row" style="display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 4px"><div><span class="lab">Owner on the client side</span><br>L. Chen, client contact</div><div><label><span class="lab">Due</span><br><select data-due data-fid="due">'+['Wed 18 Nov','Fri 20 Nov','Mon 23 Nov'].map(function(d){return '<option '+(S.due===d?'selected':'')+'>'+d+'</option>'}).join('')+'</select></label></div></div><div class="preview"><div class="lab">What the client will see</div>'+(items.length?'<p style="margin:6px 0 0"><b>'+items.length+' item'+(items.length>1?'s':'')+' needed by '+S.due+'</b></p><ol>'+items.map(function(i){return '<li>'+esc(i.t)+' <small style="color:var(--muted)">('+S.codes[i.k]+')</small></li>'}).join('')+'</ol><p class="sub" style="margin:8px 0 0">Your contact is A. Mehta. Reply here. No email needed.</p>':'<p>Select at least one item.</p>')+'</div><div class="actions"><button class="btn good" data-go="3" data-fid="a3" '+(items.length?'':'disabled')+'>Send request</button></div>';
+ }
+ if(st===3){
+  var both=S.att.ein&&S.att.sign;
+  return '<h2 tabindex="-1">What we need from you</h2><p class="sub">Harbor Ridge Holdings LLC · 2 items · due '+S.due+'. Your contact is A. Mehta.</p><div class="val"><div class="row" style="margin-top:0"><b>1. EIN confirmation letter</b><span class="chip">R-01</span></div><p style="margin:6px 0 10px">We have not received it. It is required for a domestic LLC.</p><button class="btn '+(S.att.ein?'':'pri')+'" data-att="ein" data-fid="atein">'+(S.att.ein?'File attached. Replace':'Upload file')+'</button></div><div class="val"><div class="row" style="margin-top:0"><b>2. Resolution naming Elena Ruiz</b><span class="chip">R-04</span></div><p style="margin:6px 0 10px">The resolution on page 2 names Marcus Webb only. Upload a signed resolution that names Elena Ruiz, or tell us to remove her.</p><button class="btn '+(S.att.sign?'':'pri')+'" data-att="sign" data-fid="atsign">'+(S.att.sign?'File attached. Replace':'Upload file')+'</button></div><div class="actions"><span class="hint">'+(both?'Both items attached.':'Attach both files to send.')+'</span><button class="btn good" data-go="4" data-fid="a4" '+(both?'':'disabled')+'>Send to the bank</button></div>';
+ }
+ return '<h2 tabindex="-1">KYC cleared</h2><p class="sub">Day 3. Account setup can begin. The relationship manager sees the same status without asking.</p><div class="note good"><b>Clear KYC was locked until</b> all six values were accepted and every required document had arrived.</div><div class="list" style="margin-top:12px"><div class="li"><span>Decision log<small>Who accepted what, and from which page</small></span><span class="chip ok">Complete</span></div><div class="li"><span>Mon 16 Nov 14:07<small>Client submitted 5 of 6 items. Exception raised: R-01.</small></span></div><div class="li"><span>Mon 16 Nov 14:21<small>A. Mehta accepted 4 values. Flagged Elena Ruiz: R-04.</small></span></div><div class="li"><span>Mon 16 Nov 14:34<small>One request sent to L. Chen, due '+S.due+'.</small></span></div><div class="li"><span>Tue 17 Nov 09:20<small>Client replied with both files. A. Mehta accepted the rest and cleared KYC.</small></span></div></div>';
+}
+
+/* ---------- rendering ---------- */
+function ribbon(){
+ var segs=SEGS[S.mode], html='', i, j;
+ for(i=0;i<=S.step;i++)for(j=0;j<segs[i].length;j++){var s=segs[i][j];html+='<div class="seg '+s[0]+'" style="width:'+(s[1]/DAYS*100)+'%" title="'+NAMES[s[0]]+': '+s[1]+' day'+(s[1]===1?'':'s')+'"></div>'}
+ var end=ENDDAY[S.mode][S.step], g='';
+ if(S.mode==='after'&&S.step===4) g='<div class="ghost" style="left:'+(3/DAYS*100)+'%;right:0">10 days not spent waiting</div>';
+ $('#track').innerHTML='<div class="fill" style="width:100%">'+html+'</div>'+g;
+ $('#day').innerHTML='Day '+end+'<small>'+(S.mode==='before'?'Current process':'Improved process')+'</small>';
+}
+function steps(){
+ var h='';
+ STEP_NAMES.forEach(function(n,i){
+  var tag=(i===2)?'<span class="tag '+(S.mode==='after'?'fix':'prob')+'">'+(S.mode==='after'?'Fix':'Problem')+'</span>':'';
+  h+='<li><button type="button" data-step="'+i+'" '+(S.step===i?'aria-current="step"':'')+' data-fid="st'+i+'"><span class="n">'+(i+1)+'</span><span class="t">'+n+'</span>'+tag+'</button></li>';
+ });
+ $('#steps').innerHTML=h;
+}
+function anno(){
+ var a=ANNO[S.mode][S.step], h='', cls='card';
+ if(a.fix){cls+=' fixcard';h+='<div class="lab">Product decision on this screen</div>'}
+ else if(a.problem){cls+=' probcard';h+='<div class="lab">What is going wrong</div>'}
+ else h+='<div class="lab">Step '+(S.step+1)+' · '+(S.mode==='before'?'Current process':'Improved process')+'</div>';
+ h+='<h3>'+a.t+'</h3>';
+ if(a.rows){h+='<div class="dl">'+a.rows.map(function(r){return '<div><b>'+r[0]+'</b>'+r[1]+'</div>'}).join('')+'</div>'}
+ else h+='<p style="margin:0">'+a.b+'</p>';
+ var el=$('#anno');el.className=cls;el.innerHTML=h;
+}
+function metric(){
+ var rq=REQS[S.mode][S.step], total=S.mode==='before'?2:1;
+ $('#metric').innerHTML='<div class="lab">The one metric this moves</div><h3>Repeat-request rate</h3><p style="margin:0">The share of cases where the bank asks twice for the same gap. It sits upstream of the north star: median business days to KYC clearance.</p><div class="metric"><div><div class="big">'+rq+'</div><small>Requests sent on this case so far</small></div><div><div class="big">'+ENDDAY[S.mode][S.step]+'</div><small>Days elapsed on this case</small></div></div><p class="sub" style="margin:10px 0 0;font-size:13px">End of case: '+total+' request'+(total>1?'s':'')+', '+ENDDAY[S.mode][4]+' days. '+(S.mode==='before'?'The second request was needed because the first named nothing.':'The first request named every gap, so there was no second one.')+'</p>';
+}
+function render(focusId,moveFocus){
+ var fb=$('#frameBox');fb.className='frame '+S.mode;
+ $('#barTitle').innerHTML='<b>'+BAR[S.step]+'</b>';
+ $('#role').textContent='Viewing as: '+ROLES[S.step];
+ $('#screen').innerHTML=S.mode==='before'?scrBefore():scrAfter();
+ Array.prototype.forEach.call(document.querySelectorAll('[data-mode]'),function(b){b.setAttribute('aria-pressed',String(b.dataset.mode===S.mode))});
+ steps();ribbon();anno();metric();
+ if(focusId){var f=document.querySelector('[data-fid="'+focusId+'"]');if(f&&!f.disabled){f.focus();return}}
+ if(moveFocus){var h=$('#screen h2');if(h)h.focus({preventScroll:false})}
+}
+function go(n,mf){S.step=Math.max(0,Math.min(4,n));render(null,mf)}
+
+/* ---------- events ---------- */
+document.addEventListener('click',function(e){
+ var t=e.target.closest('button');if(!t||t.disabled)return;var d=t.dataset;
+ if(d.mode){S.mode=d.mode;render(t.dataset.fid||null);return}
+ if(d.step!==undefined){go(Number(d.step),true);return}
+ if(d.go!==undefined){go(Number(d.go),true);return}
+ if(d.pg){S.page=Math.max(1,Math.min(38,S.page+Number(d.pg)));render(d.fid);return}
+ if(d.audit){S.audit=!S.audit;render(d.fid);return}
+ if(d.acc){S.accepted[d.acc]=true;render('vw'+d.acc);return}
+ if(d.view){S.view=d.view;render(d.fid);return}
+ if(d.att){S.att[d.att]=true;render(d.fid);return}
+});
+document.addEventListener('change',function(e){
+ var t=e.target,d=t.dataset;
+ if(d.sel){S.sel[d.sel]=t.checked;render(d.fid);return}
+ if(d.code){S.codes[d.code]=t.value;render(d.fid);return}
+ if(d.due!==undefined){S.due=t.value;render(d.fid);return}
+});
+document.addEventListener('input',function(e){if(e.target.hasAttribute&&e.target.hasAttribute('data-draft'))S.draft=e.target.value});
+render();
+})();
+</script>
+</body>
+</html>
